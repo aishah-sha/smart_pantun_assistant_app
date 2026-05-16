@@ -31,6 +31,16 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
   List<Pantun> _examplePantun = [];
   late AnimationController _pulseCtrl;
 
+  // ── Confidence label thresholds ────────────────────────────────────────
+  static const Map<String, String> _themeEmoji = {
+    'Agama & Spiritual': '🕌',
+    'Budi & Adab': '🙏',
+    'Cinta & Kasih Sayang': '❤️',
+    'Jenaka': '😄',
+    'Nasihat & Moral': '📖',
+    'Peribahasa & Kiasan': '🪞',
+  };
+
   @override
   void initState() {
     super.initState();
@@ -40,6 +50,8 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
     );
     _initSpeech();
     _tts.setLanguage('ms-MY');
+    // Ensure pantun data is loaded
+    PantunService.instance.loadData();
   }
 
   @override
@@ -84,6 +96,8 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
         }
       },
       localeId: 'ms_MY',
+      // Classify incrementally so user sees live feedback
+      partialResults: true,
     );
   }
 
@@ -94,10 +108,15 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
   }
 
   void _classify() {
-    if (_recognizedText.trim().isEmpty) return;
+    final text = _textCtrl.text.trim().isEmpty
+        ? _recognizedText.trim()
+        : _textCtrl.text.trim();
+
+    if (text.isEmpty) return;
+    _recognizedText = text;
 
     setState(() => _isClassifying = true);
-    final res = PantunService.instance.classifyText(_recognizedText);
+    final res = PantunService.instance.classifyText(text);
 
     setState(() {
       _results = res;
@@ -105,13 +124,38 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
 
       if (_results.isNotEmpty) {
         final topTheme = _results.first.key;
+        final topScore = _results.first.value;
         _examplePantun = PantunService.instance.getPantunByTheme(
           topTheme,
           limit: 3,
         );
-        _tts.speak('Tema dikesan: $topTheme');
+
+        // Announce in BM with confidence hint
+        final confidenceWord = topScore >= 0.8
+            ? 'sangat jelas'
+            : topScore >= 0.5
+                ? 'berpadanan'
+                : 'mungkin';
+        _tts.speak('Tema $confidenceWord: $topTheme');
       }
     });
+  }
+
+  // ── Confidence label ──────────────────────────────────────────────────
+  String _confidenceLabel(double score) {
+    if (score >= 0.85) return 'Sangat Tepat';
+    if (score >= 0.65) return 'Tepat';
+    if (score >= 0.40) return 'Sederhana';
+    if (score >= 0.20) return 'Lemah';
+    return 'Tidak Berpadanan';
+  }
+
+  Color _confidenceColor(double score) {
+    if (score >= 0.85) return const Color(0xFF2E7D32); // deep green
+    if (score >= 0.65) return const Color(0xFF558B2F); // light green
+    if (score >= 0.40) return const Color(0xFFF57F17); // amber
+    if (score >= 0.20) return const Color(0xFFBF360C); // orange-red
+    return AppTheme.textSecondary;
   }
 
   @override
@@ -128,6 +172,9 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
           slivers: [
             SliverToBoxAdapter(child: _buildMicSection()),
             SliverToBoxAdapter(child: _buildInputSection()),
+            // Live interim classification while listening
+            if (_isListening && _recognizedText.isNotEmpty)
+              SliverToBoxAdapter(child: _buildLivePreview()),
             if (_isClassifying)
               const SliverToBoxAdapter(
                 child: Padding(
@@ -138,6 +185,7 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
                 ),
               ),
             if (!_isClassifying && _results.isNotEmpty) ...[
+              SliverToBoxAdapter(child: _buildTopThemeBanner()),
               SliverToBoxAdapter(child: _buildResultsHeader()),
               SliverToBoxAdapter(child: _buildThemeResults()),
               if (_examplePantun.isNotEmpty) ...[
@@ -160,6 +208,7 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
     );
   }
 
+  // ── Mic button ───────────────────────────────────────────────────────
   Widget _buildMicSection() {
     return Container(
       height: 220,
@@ -167,6 +216,7 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
       child: Stack(
         alignment: Alignment.center,
         children: [
+          // Pulse ring
           AnimatedBuilder(
             animation: _pulseCtrl,
             builder: (_, __) => Container(
@@ -178,6 +228,7 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
               ),
             ),
           ),
+          // Mic button
           GestureDetector(
             onTap: _isListening ? _stopListening : _startListening,
             child: Container(
@@ -207,6 +258,7 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
     );
   }
 
+  // ── Text input ───────────────────────────────────────────────────────
   Widget _buildInputSection() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -260,54 +312,186 @@ class _VoiceClassifierScreenState extends State<VoiceClassifierScreen>
     );
   }
 
-  Widget _buildResultsHeader() => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 28, 20, 12),
-    child: Text(
-      'Keputusan Klasifikasi',
-      style: GoogleFonts.playfairDisplay(
-        fontSize: 20,
-        fontWeight: FontWeight.bold,
-        color: AppTheme.textPrimary,
-      ),
-    ),
-  );
+  // ── Live classification preview while listening ───────────────────────
+  Widget _buildLivePreview() {
+    final liveResults = PantunService.instance.classifyText(_recognizedText);
+    if (liveResults.isEmpty) return const SizedBox.shrink();
 
-  Widget _buildThemeResults() => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 16),
-    child: Column(
-      children: _results.take(6).toList().asMap().entries.map((entry) {
-        final i = entry.key;
-        final e = entry.value;
-        final maxScore = _results.isNotEmpty ? _results.first.value : 1.0;
-        return ThemeResultCard(
-          tema: e.key,
-          score: e.value,
-          maxScore: maxScore,
-          rank: i,
-        ).animate(delay: (i * 80).ms).slideX(begin: -0.1).fadeIn();
-      }).toList(),
-    ),
-  );
-
-  Widget _buildExamplesHeader() => Padding(
-    padding: const EdgeInsets.fromLTRB(20, 28, 20, 12),
-    child: Row(
-      children: [
-        const Icon(
-          Icons.auto_stories_rounded,
-          size: 18,
-          color: AppTheme.accent,
+    final top = liveResults.first;
+    final emoji = _themeEmoji[top.key] ?? '🎵';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppTheme.primary.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppTheme.primary.withOpacity(0.2)),
         ),
-        const SizedBox(width: 8),
-        Text(
-          'Contoh Pantun Padanan',
+        child: Row(
+          children: [
+            Text(emoji, style: const TextStyle(fontSize: 22)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Tema dijangka: ${top.key}',
+                    style: GoogleFonts.notoSans(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppTheme.textPrimary,
+                    ),
+                  ),
+                  Text(
+                    '"$_recognizedText"',
+                    style: GoogleFonts.notoSans(
+                      fontSize: 11,
+                      color: AppTheme.textSecondary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.graphic_eq_rounded, color: AppTheme.primary, size: 20),
+          ],
+        ),
+      ),
+    )
+        .animate(key: ValueKey(_recognizedText.length ~/ 3))
+        .fadeIn(duration: 200.ms);
+  }
+
+  // ── Top theme banner ─────────────────────────────────────────────────
+  Widget _buildTopThemeBanner() {
+    final top = _results.first;
+    final emoji = _themeEmoji[top.key] ?? '🎵';
+    final label = _confidenceLabel(top.value);
+    final color = _confidenceColor(top.value);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 28, 20, 0),
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              AppTheme.primary.withOpacity(0.12),
+              AppTheme.accent.withOpacity(0.07),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppTheme.primary.withOpacity(0.15)),
+        ),
+        child: Row(
+          children: [
+            Text(emoji, style: const TextStyle(fontSize: 36)),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    top.key,
+                    style: GoogleFonts.playfairDisplay(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: color.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          label,
+                          style: GoogleFonts.notoSans(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: color,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${(top.value * 100).toStringAsFixed(0)}% padanan',
+                        style: GoogleFonts.notoSans(
+                          fontSize: 12,
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ).animate().slideY(begin: 0.2).fadeIn(duration: 400.ms);
+  }
+
+  // ── Results list header ──────────────────────────────────────────────
+  Widget _buildResultsHeader() => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+        child: Text(
+          'Semua Tema',
           style: GoogleFonts.playfairDisplay(
             fontSize: 18,
             fontWeight: FontWeight.bold,
             color: AppTheme.textPrimary,
           ),
         ),
-      ],
-    ),
-  );
+      );
+
+  // ── Theme result bars ─────────────────────────────────────────────────
+  Widget _buildThemeResults() => Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          children: _results.take(6).toList().asMap().entries.map((entry) {
+            final i = entry.key;
+            final e = entry.value;
+            final maxScore =
+                _results.isNotEmpty ? _results.first.value : 1.0;
+            return ThemeResultCard(
+              tema: e.key,
+              score: e.value,
+              maxScore: maxScore,
+              rank: i,
+            ).animate(delay: (i * 80).ms).slideX(begin: -0.1).fadeIn();
+          }).toList(),
+        ),
+      );
+
+  // ── Example pantun header ─────────────────────────────────────────────
+  Widget _buildExamplesHeader() => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 28, 20, 12),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.auto_stories_rounded,
+              size: 18,
+              color: AppTheme.accent,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Contoh Pantun Padanan',
+              style: GoogleFonts.playfairDisplay(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.textPrimary,
+              ),
+            ),
+          ],
+        ),
+      );
 }

@@ -17,6 +17,7 @@ class Pantun {
     required this.negeri,
     required this.tema,
     required this.noBaru,
+    required String id,
   });
 
   factory Pantun.fromJson(Map<String, dynamic> json) {
@@ -39,6 +40,7 @@ class Pantun {
       negeri: (json['field7'] as String? ?? 'Umum').trim(),
       tema: (json['field8'] as String? ?? 'Nasihat & Moral').trim(),
       noBaru: noBaru,
+      id: '',
     );
   }
 
@@ -51,6 +53,7 @@ class Pantun {
     negeri: '',
     tema: '',
     noBaru: '',
+    id: '',
   );
 
   bool get isValid =>
